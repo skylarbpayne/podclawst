@@ -23,7 +23,7 @@ interface Connection {
 let connection: Connection | null = null;
 
 export default function register(api: OpenClawPluginApi) {
-  const logger = api.logger.child({ plugin: "podclawst" });
+  const logger = api.logger;
 
   api.registerTool({
     name: "podclawst",
@@ -75,7 +75,7 @@ export default function register(api: OpenClawPluginApi) {
   logger.info("Podclawst plugin loaded (Phase 0)");
 }
 
-async function handleJoin(serverUrl: string, logger: any) {
+async function handleJoin(serverUrl: string, logger: { info: (msg: string) => void; error: (msg: string, ...args: unknown[]) => void }) {
   if (connection?.connected) {
     return { content: [{ type: "text", text: "Already connected. Use 'leave' first to reconnect." }] };
   }
