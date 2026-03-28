@@ -248,6 +248,11 @@ Each phase is independently deployable and verifiable. Don't skip ahead.
 
 ## Current Status
 
-**Phase 0: Not started**
+**Phase 0: COMPLETE** ✅ (2026-03-28)
 
-Next action: Create `server/src/index.ts` with basic Bun WebSocket server.
+Verified:
+- Server runs on port 3456, logs all messages, echoes back
+- Plugin installed and working: join/speak/messages/leave all functional
+- End-to-end test passed with Palmer connecting and sending messages
+
+**Next: Phase 1** - Rooms & Participants (multiple claws broadcasting to each other)
