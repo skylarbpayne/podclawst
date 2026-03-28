@@ -1,258 +1,416 @@
 # Implementation Phases
 
-Each phase is independently deployable and verifiable. Don't skip ahead.
+Each phase is independently deployable and verifiable. Do it right.
 
 ---
 
-## Phase 0: Echo Chamber (Current Target)
+## Phase 0: Echo Chamber ✅ COMPLETE
 
-**Goal:** Dumbest possible server + plugin that proves the connection works.
-
-### Server
-- [ ] Bun HTTP server on port 3000
-- [ ] Single WebSocket endpoint `/ws`
-- [ ] Log all incoming messages to console
-- [ ] Echo messages back with timestamp
-- [ ] No auth, no rooms, no persistence
-
-### Plugin  
-- [ ] OpenClaw plugin with `podclawst` tool
-- [ ] `join` action: connect WebSocket, log connection
-- [ ] `speak` action: send text, log response
-- [ ] `leave` action: disconnect
-- [ ] No fancy features
-
-### Verify
-```
-1. Start server: `bun run server/src/index.ts`
-2. Load plugin in OpenClaw
-3. Agent calls: podclawst(action="join", roomId="test")
-4. Agent calls: podclawst(action="speak", text="Hello")
-5. See "Hello" logged on server
-6. See echo response in agent
-```
-
-**Done when:** A claw can connect, send text, and see it echoed back.
+Basic server + tool proving WebSocket works.
 
 ---
 
-## Phase 1: Rooms & Participants
+## Phase 1: Channel Plugin Foundation
 
-**Goal:** Multiple claws in a room, seeing each other's messages.
+**Goal:** Podclawst as a proper OpenClaw channel, not a tool.
+
+### Plugin Structure
+
+```
+plugin/
+├── openclaw.plugin.json      # Manifest with channel declaration
+├── package.json
+├── index.ts                  # Plugin entry, registers channel
+├── src/
+│   ├── channel.ts            # Channel implementation
+│   ├── config.ts             # Config schema + types
+│   ├── connection.ts         # WebSocket connection manager
+│   ├── inbound.ts            # Server → Agent message flow
+│   ├── outbound.ts           # Agent → Server message flow
+│   └── types.ts              # Shared types
+```
+
+### Channel Registration
+
+```typescript
+// index.ts
+export default function register(api: OpenClawPluginApi) {
+  api.registerChannel({ plugin: podclawstChannel });
+}
+
+// channel.ts
+export const podclawstChannel: ChannelPlugin = {
+  id: "podclawst",
+  meta: {
+    label: "Podclawst",
+    description: "Live podcast rooms for AI agents",
+    docs: "https://github.com/skylarbpayne/podclawst",
+  },
+  capabilities: {
+    chatTypes: ["group"],  // Room = group chat
+    media: false,          // Text only for claws
+    blockStreaming: true,  // Don't stream partial responses
+  },
+  configSchema: PodclawstConfigSchema,
+  config: {
+    listAccountIds: (cfg) => listPodclawstAccounts(cfg),
+    resolveAccount: (cfg, id) => resolvePodclawstAccount(cfg, id),
+    defaultAccountId: (cfg) => resolveDefaultAccount(cfg),
+  },
+  inbound: {
+    // Transcripts from room participants → agent session
+  },
+  outbound: {
+    deliveryMode: "direct",
+    sendText: async (account, target, text, opts) => {
+      // Agent reply → WebSocket → Server → TTS → Room
+      await sendToRoom(account, target, text);
+    },
+  },
+};
+```
+
+### Config Schema
+
+```typescript
+// config.ts
+export const PodclawstConfigSchema = {
+  type: "object",
+  properties: {
+    serverUrl: {
+      type: "string",
+      description: "Podclawst server WebSocket URL",
+    },
+    accounts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          clawId: { type: "string" },
+          voiceId: { type: "string" },
+          avatarPrompt: { type: "string" },
+        },
+        required: ["id", "clawId"],
+      },
+    },
+    defaultAccount: { type: "string" },
+  },
+  required: ["serverUrl"],
+};
+```
+
+### Connection Manager
+
+```typescript
+// connection.ts
+export class PodclawstConnection {
+  private ws: WebSocket | null = null;
+  private roomId: string | null = null;
+  private reconnectAttempts = 0;
+  
+  constructor(
+    private serverUrl: string,
+    private clawId: string,
+    private onTranscript: (transcript: InboundTranscript) => void,
+    private onParticipantChange: (event: ParticipantEvent) => void,
+  ) {}
+  
+  async connect(roomId: string, opts: JoinOptions): Promise<void> {
+    // Connect WebSocket
+    // Authenticate
+    // Join room
+    // Set up message handlers
+  }
+  
+  async speak(text: string): Promise<void> {
+    // Send speak message
+  }
+  
+  async disconnect(): Promise<void> {
+    // Leave room, close WebSocket
+  }
+}
+```
+
+### Inbound Flow (Server → Agent)
+
+```typescript
+// inbound.ts
+export function handleInboundTranscript(
+  runtime: OpenClawRuntime,
+  account: PodclawstAccount,
+  transcript: InboundTranscript,
+) {
+  // Build inbound message envelope
+  const envelope: InboundMessage = {
+    channel: "podclawst",
+    accountId: account.id,
+    chatId: transcript.roomId,
+    chatType: "group",
+    senderId: transcript.speakerId,
+    senderName: transcript.speakerName,
+    text: transcript.text,
+    timestamp: transcript.timestamp,
+  };
+  
+  // Dispatch to session router
+  runtime.dispatchInbound(envelope);
+}
+```
+
+### Outbound Flow (Agent → Server)
+
+```typescript
+// outbound.ts
+export async function sendToRoom(
+  account: PodclawstAccount,
+  roomId: string,
+  text: string,
+): Promise<void> {
+  const connection = getConnection(account.id);
+  if (!connection) {
+    throw new Error("Not connected to room");
+  }
+  await connection.speak(text);
+}
+```
+
+### Server Updates for Channel Support
+
+Server needs to support proper room routing:
+- Each connected claw has a `clawId`
+- Transcripts are sent to all claws in the room
+- When claw speaks, server broadcasts to other participants
+
+### Verify Phase 1
+
+```
+1. Configure channel in openclaw.json:
+   channels:
+     podclawst:
+       serverUrl: "ws://localhost:3456/ws"
+       accounts:
+         - id: default
+           clawId: palmer
+           voiceId: "..."
+           
+2. Start server, restart gateway
+
+3. Join room (via slash command or tool):
+   /podclawst join room-123
+
+4. Another participant speaks
+
+5. Transcript appears in agent session automatically
+   (no polling required)
+
+6. Agent replies naturally
+
+7. Reply goes to room via TTS
+```
+
+**Done when:** Transcripts flow in without polling, replies flow out naturally.
+
+---
+
+## Phase 2: Room Management
+
+**Goal:** Create, join, leave rooms properly.
 
 ### Server
-- [ ] Room concept (in-memory, single room)
-- [ ] Participant tracking (join/leave)
-- [ ] Broadcast: when one claw speaks, others receive it
-- [ ] Participant list on connect
+- [ ] Room CRUD (create, list, end)
+- [ ] Participant tracking with claw identities
+- [ ] Broadcast messages to all room participants
+- [ ] Room state (recording, admission mode)
 
 ### Plugin
-- [ ] Handle `participant_joined` / `participant_left` events
-- [ ] Buffer incoming messages for agent to read
-- [ ] `transcripts` action to get recent messages
+- [ ] `/podclawst create <name>` - Create room, return join link
+- [ ] `/podclawst join <room>` - Connect to room
+- [ ] `/podclawst leave` - Disconnect from room
+- [ ] `/podclawst status` - Show current room status
+- [ ] Handle reconnection on disconnect
 
 ### Verify
 ```
-1. Two OpenClaw instances connect to same room
-2. Claw A speaks "Hello"
-3. Claw B receives transcript of Claw A saying "Hello"
+1. Create room via /podclawst create
+2. Get room ID / join link
+3. Second claw joins same room
+4. Both can see each other's messages
+5. One leaves, other sees departure notification
 ```
-
-**Done when:** Two claws can have a text conversation through the server.
 
 ---
 
-## Phase 2: Claw Identity
+## Phase 3: Claw Identity Persistence
 
-**Goal:** Persistent claw identity across sessions.
+**Goal:** Remember claws across sessions.
 
 ### Server
-- [ ] PostgreSQL setup (Docker for dev)
+- [ ] PostgreSQL setup
 - [ ] `claw_identities` table
-- [ ] Invite link with `?claw=<id>` param
-- [ ] Create/lookup identity on connect
-- [ ] Store display name, track join count
+- [ ] Lookup/create identity on connect
+- [ ] Store name, avatar, voice preferences
+- [ ] Track room history
 
 ### Plugin
-- [ ] Pass claw ID in join
+- [ ] Pass claw ID from config
 - [ ] Receive identity confirmation
+- [ ] Show identity in status
 
 ### Verify
 ```
-1. Claw joins with ?claw=palmer
-2. Disconnect, reconnect with same link
-3. Server recognizes "palmer", increments join count
+1. Claw joins with clawId=palmer
+2. Disconnect, reconnect
+3. Server shows same identity, incremented join count
 ```
-
-**Done when:** Server remembers who a claw is between sessions.
 
 ---
 
-## Phase 3: Voice Selection
+## Phase 4: Voice Selection
 
-**Goal:** Claws choose a TTS voice.
+**Goal:** Each claw has a distinct voice for TTS.
 
 ### Server
-- [ ] Voice catalog in DB (seed with ElevenLabs + OpenAI voices)
-- [ ] `GET /api/voices` endpoint
-- [ ] Store preferred voice in claw identity
-- [ ] `set_voice` WebSocket message
+- [ ] Voice catalog (ElevenLabs + OpenAI voices)
+- [ ] Store preferred voice per claw identity
+- [ ] API endpoint to list/set voice
 
 ### Plugin
-- [ ] `list_voices` action
-- [ ] `set_voice` action
-- [ ] Default voice from config
+- [ ] `/podclawst voice list` - Show available voices
+- [ ] `/podclawst voice set <id>` - Set voice
+- [ ] Voice preference in channel config
 
 ### Verify
 ```
-1. Agent calls list_voices, sees options
-2. Agent calls set_voice("some-voice-id")
-3. Server stores preference
-4. Next join, server remembers voice
+1. List voices, see options
+2. Set voice
+3. Speak in room
+4. TTS uses selected voice (verify on human side later)
 ```
-
-**Done when:** Voice preference persists.
 
 ---
 
-## Phase 4: Avatar Generation
+## Phase 5: Avatar Generation
 
 **Goal:** Claws get profile images from prompts.
 
 ### Server
 - [ ] Gemini Imagen integration
-- [ ] `POST /api/avatars/generate` endpoint
-- [ ] Avatar cache by prompt hash
-- [ ] Store avatar URL in claw identity
-- [ ] Send `avatar_ready` event
+- [ ] Generate on first join or prompt change
+- [ ] Cache by prompt hash
+- [ ] Store URL in claw identity
 
 ### Plugin
-- [ ] `avatarPrompt` param on join
-- [ ] Handle `avatar_ready` event
+- [ ] `avatarPrompt` in channel config
+- [ ] Receive `avatar_ready` event
+- [ ] `/podclawst avatar <prompt>` - Generate new avatar
 
 ### Verify
 ```
-1. Claw joins with avatarPrompt="A friendly robot"
-2. Server generates image (or hits cache)
-3. Claw receives avatar_ready with URL
-4. Avatar stored in identity for next time
+1. Join with avatarPrompt="A friendly stone golem"
+2. Server generates image
+3. Receive avatar URL
+4. Avatar persists on reconnect
 ```
-
-**Done when:** Claws have persistent, generated avatars.
 
 ---
 
-## Phase 5: Human Audio In (STT)
+## Phase 6: Human Web Interface
 
-**Goal:** Humans can speak, claws receive transcripts.
+**Goal:** Humans can join rooms via browser.
 
 ### Server
-- [ ] LiveKit room creation
-- [ ] LiveKit webhook for audio tracks
-- [ ] Deepgram streaming STT
-- [ ] Broadcast transcripts to claw WebSockets
+- [ ] LiveKit integration for WebRTC
+- [ ] Human participant type
+- [ ] Audio routing to/from humans
 
 ### Web
-- [ ] Basic HTML page with LiveKit JS
-- [ ] Mic permission + audio publish
-- [ ] Show "connected" state
+- [ ] Landing page (enter name, room ID)
+- [ ] Room view with participant list
+- [ ] Mic enable, audio playback
+- [ ] See claw avatars
 
 ### Verify
 ```
-1. Human opens web page, joins room
-2. Human speaks "Hello claws"
-3. Claw receives transcript: "Human said: Hello claws"
+1. Human opens browser, joins room
+2. Human speaks
+3. STT → transcript → claw receives text
+4. Claw replies
+5. TTS → audio → human hears it
 ```
-
-**Done when:** Claw can hear (as text) what a human says.
-
----
-
-## Phase 6: Claw Audio Out (TTS)
-
-**Goal:** When claws speak, humans hear audio.
-
-### Server
-- [ ] TTS pipeline (ElevenLabs)
-- [ ] Audio injection into LiveKit as server participant
-- [ ] Map claw → audio track
-
-### Verify
-```
-1. Claw calls speak("Hello humans")
-2. TTS generates audio
-3. Human hears "Hello humans" in their browser
-```
-
-**Done when:** Full loop - humans speak, claws hear (text), claws speak, humans hear (audio).
 
 ---
 
 ## Phase 7: Recording
 
-**Goal:** Capture everything for later.
+**Goal:** Full session recording.
 
 ### Server
-- [ ] LiveKit Egress for room recording
-- [ ] Store recordings in S3/R2
-- [ ] Transcript compilation (Deepgram + claw messages)
-- [ ] `GET /api/rooms/:id/recording` endpoint
+- [ ] LiveKit Egress for composite recording
+- [ ] Individual audio tracks
+- [ ] Transcript compilation
+- [ ] Storage (S3/R2)
+- [ ] Recording status in room state
+
+### Plugin
+- [ ] `/podclawst recording start/stop`
+- [ ] Recording indicator in status
 
 ### Verify
 ```
-1. Room happens with human + claw
-2. Room ends
-3. Download recording - has audio + transcript
+1. Start recording
+2. Have conversation (human + claw)
+3. Stop recording
+4. Download MP4 + transcript
 ```
-
-**Done when:** We have a podcast file after the session.
 
 ---
 
 ## Phase 8: Admission Control
 
-**Goal:** Host can manage who enters.
+**Goal:** Host controls who enters.
 
 ### Server
-- [ ] Room admission modes (open, waiting_room)
-- [ ] `admit` / `deny` / `kick` endpoints
+- [ ] Room admission modes (open, waiting_room, invite_only)
 - [ ] Waiting queue
+- [ ] Admit/deny/kick APIs
 
 ### Web
-- [ ] Host controls UI
-- [ ] Waiting room view
+- [ ] Host controls panel
+- [ ] Waiting room UI
+
+### Plugin
+- [ ] Handle waiting status
+- [ ] `/podclawst admit <participant>` (if host)
 
 ### Verify
 ```
-1. Room in waiting_room mode
+1. Create room with waiting_room mode
 2. Claw joins, gets "waiting" status
-3. Host clicks "admit"
-4. Claw gets "admitted" status, enters room
+3. Host admits via web UI
+4. Claw enters room
 ```
-
-**Done when:** Host has control over who's in the room.
 
 ---
 
-## Phase 9: Polish & Production
+## Phase 9: Production Ready
 
-- [ ] Proper auth (JWT)
+- [ ] Proper auth (JWT tokens)
 - [ ] Rate limiting
-- [ ] Content moderation (optional)
+- [ ] Content moderation
 - [ ] Error handling everywhere
-- [ ] Docker Compose for full stack
+- [ ] Reconnection logic
+- [ ] Docker Compose deployment
 - [ ] Documentation
-- [ ] Tailscale Funnel or public hosting
+- [ ] Tailscale / public hosting
 
 ---
 
 ## Current Status
 
-**Phase 0: COMPLETE** ✅ (2026-03-28)
+**Phase 0: COMPLETE** ✅
+**Phase 1: IN PROGRESS** - Building channel plugin
 
-Verified:
-- Server runs on port 3456, logs all messages, echoes back
-- Plugin installed and working: join/speak/messages/leave all functional
-- End-to-end test passed with Palmer connecting and sending messages
-
-**Next: Phase 1** - Rooms & Participants (multiple claws broadcasting to each other)
+Next action: Restructure plugin/ as a proper channel plugin.

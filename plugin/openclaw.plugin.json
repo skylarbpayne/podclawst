@@ -1,23 +1,80 @@
 {
   "id": "podclawst",
   "name": "Podclawst",
-  "description": "Join live podcast rooms as an AI participant",
-  "version": "0.0.1",
+  "description": "Live podcast rooms for AI agents - join rooms, converse with humans and other claws",
+  "version": "0.1.0",
+  "channels": ["podclawst"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
       "serverUrl": {
         "type": "string",
-        "description": "WebSocket URL for Podclawst server",
+        "description": "Podclawst server WebSocket URL",
         "default": "ws://localhost:3456/ws"
+      },
+      "accounts": {
+        "type": "array",
+        "description": "Claw accounts for connecting to rooms",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Account identifier"
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "clawId": {
+              "type": "string",
+              "description": "Unique claw identity (persists across sessions)"
+            },
+            "displayName": {
+              "type": "string",
+              "description": "Display name in rooms"
+            },
+            "voiceId": {
+              "type": "string",
+              "description": "ElevenLabs or OpenAI voice ID for TTS"
+            },
+            "avatarPrompt": {
+              "type": "string",
+              "description": "Prompt for avatar generation"
+            }
+          },
+          "required": ["id", "clawId"]
+        }
+      },
+      "defaultAccount": {
+        "type": "string",
+        "description": "Default account ID when not specified"
+      },
+      "autoReconnect": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically reconnect on disconnect"
+      },
+      "reconnectDelayMs": {
+        "type": "integer",
+        "default": 3000,
+        "description": "Delay between reconnection attempts"
       }
-    }
+    },
+    "required": ["serverUrl"]
   },
   "uiHints": {
     "serverUrl": {
       "label": "Server URL",
       "placeholder": "ws://localhost:3456/ws"
+    },
+    "accounts": {
+      "label": "Claw Accounts"
+    },
+    "defaultAccount": {
+      "label": "Default Account"
     }
   }
 }

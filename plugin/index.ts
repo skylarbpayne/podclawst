@@ -1,234 +1,167 @@
 /**
- * Podclawst OpenClaw Plugin - Phase 0
+ * Podclawst OpenClaw Plugin
  * 
- * Minimal plugin that:
- * - Connects to a Podclawst server via WebSocket
- * - Sends text messages
- * - Receives and buffers responses
+ * Registers Podclawst as a channel for live podcast rooms.
+ * Claws can join rooms, receive transcripts, and speak.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-
-interface PodclawstConfig {
-  serverUrl?: string;
-}
-
-interface Connection {
-  ws: WebSocket;
-  buffer: Array<{ type: string; data: unknown; receivedAt: number }>;
-  connected: boolean;
-}
-
-// Single connection per gateway (Phase 0 simplicity)
-let connection: Connection | null = null;
+import type { OpenClawPluginApi, ChannelPlugin } from "openclaw/plugin-sdk/core";
+import { podclawstChannel, setRuntime, joinRoom, leaveRoom, getRoomState } from "./src/channel.js";
 
 export default function register(api: OpenClawPluginApi) {
   const logger = api.logger;
 
+  // Set runtime for inbound message dispatch
+  setRuntime({
+    dispatchInbound: (envelope) => {
+      // TODO: Wire this to actual runtime dispatch when available
+      // For now, log that we would dispatch
+      logger.info(`[podclawst] Would dispatch inbound: ${JSON.stringify(envelope).slice(0, 200)}`);
+    },
+    logger,
+  });
+
+  // Register the channel
+  api.registerChannel({ plugin: podclawstChannel as ChannelPlugin });
+
+  // Register CLI commands for room management
+  api.registerCli(({ program }) => {
+    const cmd = program.command("podclawst").description("Podclawst live room commands");
+
+    cmd
+      .command("join <roomId>")
+      .description("Join a Podclawst room")
+      .option("-a, --account <id>", "Account ID to use", "default")
+      .action(async (roomId: string, opts: { account: string }) => {
+        const config = api.runtime.config.loadConfig();
+        try {
+          await joinRoom(config, opts.account, roomId);
+          console.log(`Joined room: ${roomId}`);
+        } catch (error) {
+          console.error(`Failed to join room: ${error}`);
+          process.exit(1);
+        }
+      });
+
+    cmd
+      .command("leave")
+      .description("Leave the current room")
+      .option("-a, --account <id>", "Account ID", "default")
+      .action(async (opts: { account: string }) => {
+        await leaveRoom(opts.account);
+        console.log("Left room");
+      });
+
+    cmd
+      .command("status")
+      .description("Show current room status")
+      .option("-a, --account <id>", "Account ID", "default")
+      .action((opts: { account: string }) => {
+        const state = getRoomState(opts.account);
+        if (!state) {
+          console.log("Not connected to any room");
+          return;
+        }
+        console.log(`Room: ${state.roomId}`);
+        console.log(`Participant ID: ${state.participantId}`);
+        console.log(`Connected: ${state.connected}`);
+        console.log(`Participants (${state.participants.length}):`);
+        for (const p of state.participants) {
+          console.log(`  - ${p.name} (${p.type})${p.speaking ? " [speaking]" : ""}`);
+        }
+      });
+  }, { commands: ["podclawst"] });
+
+  // Register agent tool for room control
+  // This allows agents to join/leave rooms programmatically
   api.registerTool({
     name: "podclawst",
-    description: "Connect to Podclawst live rooms. Actions: join (connect to server), speak (send text), status (check connection), messages (get received messages), leave (disconnect).",
+    description: "Control Podclawst live room connection. Use 'join' to connect to a room, 'leave' to disconnect, 'status' to check connection state.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["join", "speak", "status", "messages", "leave"],
-          description: "Action to perform"
+          enum: ["join", "leave", "status"],
+          description: "Action to perform",
         },
-        text: {
+        roomId: {
           type: "string",
-          description: "Text to send (for speak action)"
-        }
+          description: "Room ID to join (required for join action)",
+        },
+        accountId: {
+          type: "string",
+          description: "Account ID to use (optional, defaults to 'default')",
+        },
       },
-      required: ["action"]
+      required: ["action"],
     },
+    async execute(_sessionId, params: { action: string; roomId?: string; accountId?: string }) {
+      const config = api.runtime.config.loadConfig();
+      const accountId = params.accountId || "default";
 
-    async execute(_sessionId, params: { action: string; text?: string }) {
-      const config = api.runtime.config.loadConfig()?.plugins?.entries?.podclawst?.config as PodclawstConfig | undefined;
-      const serverUrl = config?.serverUrl || "ws://localhost:3456/ws";
-
-      const { action, text } = params;
-
-      switch (action) {
-        case "join":
-          return handleJoin(serverUrl, logger);
-
-        case "speak":
-          return handleSpeak(text, logger);
-
-        case "status":
-          return handleStatus();
-
-        case "messages":
-          return handleMessages();
-
-        case "leave":
-          return handleLeave(logger);
-
-        default:
-          return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
-      }
-    }
-  });
-
-  logger.info("Podclawst plugin loaded (Phase 0)");
-}
-
-async function handleJoin(serverUrl: string, logger: { info: (msg: string) => void; error: (msg: string, ...args: unknown[]) => void }) {
-  if (connection?.connected) {
-    return { content: [{ type: "text", text: "Already connected. Use 'leave' first to reconnect." }] };
-  }
-
-  return new Promise((resolve) => {
-    try {
-      logger.info(`Connecting to ${serverUrl}`);
-      const ws = new WebSocket(serverUrl);
-
-      connection = {
-        ws,
-        buffer: [],
-        connected: false
-      };
-
-      ws.onopen = () => {
-        logger.info("WebSocket connected");
-        connection!.connected = true;
-      };
-
-      ws.onmessage = (event) => {
-        const data = typeof event.data === "string" ? event.data : event.data.toString();
-        logger.info(`Received: ${data}`);
-
-        try {
-          const parsed = JSON.parse(data);
-          connection!.buffer.push({
-            type: parsed.type || "unknown",
-            data: parsed,
-            receivedAt: Date.now()
-          });
-
-          // If this is the initial "connected" message, resolve
-          if (parsed.type === "connected") {
-            resolve({
+      switch (params.action) {
+        case "join": {
+          if (!params.roomId) {
+            return {
+              content: [{ type: "text", text: "Error: roomId is required for join action" }],
+            };
+          }
+          try {
+            await joinRoom(config, accountId, params.roomId);
+            const state = getRoomState(accountId);
+            return {
               content: [{
                 type: "text",
-                text: `Connected to Podclawst server!\n\nServer message: ${parsed.message || "Welcome"}\n\nUse podclawst(action="speak", text="...") to send messages.`
-              }]
-            });
+                text: `Connected to room: ${params.roomId}\n` +
+                  `Participant ID: ${state?.participantId}\n` +
+                  `Participants: ${state?.participants.map(p => p.name).join(", ")}\n\n` +
+                  `You will now receive transcripts from other participants automatically. ` +
+                  `Simply reply to participate in the conversation.`,
+              }],
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to join room: ${error}` }],
+            };
           }
-        } catch {
-          connection!.buffer.push({
-            type: "raw",
-            data,
-            receivedAt: Date.now()
-          });
         }
-      };
 
-      ws.onerror = (error) => {
-        logger.error("WebSocket error:", error);
-        resolve({
-          content: [{ type: "text", text: `Connection error: ${error}` }]
-        });
-      };
-
-      ws.onclose = () => {
-        logger.info("WebSocket closed");
-        if (connection) {
-          connection.connected = false;
+        case "leave": {
+          await leaveRoom(accountId);
+          return {
+            content: [{ type: "text", text: "Disconnected from room" }],
+          };
         }
-      };
 
-      // Timeout if no connection after 5 seconds
-      setTimeout(() => {
-        if (!connection?.connected) {
-          resolve({
-            content: [{ type: "text", text: `Connection timeout. Is the server running at ${serverUrl}?` }]
-          });
+        case "status": {
+          const state = getRoomState(accountId);
+          if (!state) {
+            return {
+              content: [{ type: "text", text: "Not connected to any room. Use podclawst(action='join', roomId='...') to connect." }],
+            };
+          }
+          const participantList = state.participants
+            .map(p => `- ${p.name} (${p.type})${p.speaking ? " [speaking]" : ""}`)
+            .join("\n");
+          return {
+            content: [{
+              type: "text",
+              text: `Room: ${state.roomId}\n` +
+                `Connected: ${state.connected}\n` +
+                `Your ID: ${state.participantId}\n` +
+                `Participants:\n${participantList}`,
+            }],
+          };
         }
-      }, 5000);
 
-    } catch (error) {
-      resolve({
-        content: [{ type: "text", text: `Failed to connect: ${error}` }]
-      });
-    }
-  });
-}
-
-function handleSpeak(text: string | undefined, logger: any) {
-  if (!connection?.connected) {
-    return { content: [{ type: "text", text: "Not connected. Use join first." }] };
-  }
-
-  if (!text) {
-    return { content: [{ type: "text", text: "No text provided. Use: podclawst(action=\"speak\", text=\"your message\")" }] };
-  }
-
-  const message = JSON.stringify({
-    type: "speak",
-    text,
-    timestamp: Date.now()
+        default:
+          return {
+            content: [{ type: "text", text: `Unknown action: ${params.action}` }],
+          };
+      }
+    },
   });
 
-  logger.info(`Sending: ${message}`);
-  connection.ws.send(message);
-
-  return {
-    content: [{
-      type: "text",
-      text: `Sent: "${text}"\n\nUse podclawst(action="messages") to see server responses.`
-    }]
-  };
-}
-
-function handleStatus() {
-  if (!connection) {
-    return { content: [{ type: "text", text: "Not connected. Use join to connect." }] };
-  }
-
-  return {
-    content: [{
-      type: "text",
-      text: `Connected: ${connection.connected}\nBuffered messages: ${connection.buffer.length}`
-    }]
-  };
-}
-
-function handleMessages() {
-  if (!connection) {
-    return { content: [{ type: "text", text: "Not connected." }] };
-  }
-
-  if (connection.buffer.length === 0) {
-    return { content: [{ type: "text", text: "No messages in buffer." }] };
-  }
-
-  // Return and clear buffer
-  const messages = connection.buffer.map(m => {
-    if (m.type === "echo" && typeof m.data === "object") {
-      const echo = m.data as { yourMessage?: string; serverTime?: number };
-      return `[echo] Server echoed: "${echo.yourMessage}" at ${new Date(echo.serverTime || 0).toISOString()}`;
-    }
-    return `[${m.type}] ${JSON.stringify(m.data)}`;
-  }).join("\n");
-
-  connection.buffer = [];
-
-  return {
-    content: [{ type: "text", text: `Messages:\n${messages}` }]
-  };
-}
-
-function handleLeave(logger: any) {
-  if (!connection) {
-    return { content: [{ type: "text", text: "Not connected." }] };
-  }
-
-  logger.info("Disconnecting");
-  connection.ws.close();
-  connection = null;
-
-  return { content: [{ type: "text", text: "Disconnected from Podclawst server." }] };
+  logger.info("[podclawst] Plugin registered (channel + tool + CLI)");
 }
