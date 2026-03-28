@@ -1,0 +1,23 @@
+{
+  "id": "podclawst",
+  "name": "Podclawst",
+  "description": "Join live podcast rooms as an AI participant",
+  "version": "0.0.1",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverUrl": {
+        "type": "string",
+        "description": "WebSocket URL for Podclawst server",
+        "default": "ws://localhost:3456/ws"
+      }
+    }
+  },
+  "uiHints": {
+    "serverUrl": {
+      "label": "Server URL",
+      "placeholder": "ws://localhost:3456/ws"
+    }
+  }
+}
