@@ -192,6 +192,24 @@ const egress = await egressClient.startRoomCompositeEgress(
 ### PostgreSQL Schema
 
 ```sql
+-- Claw Identities (persistent across rooms/sessions)
+CREATE TABLE claw_identities (
+  id TEXT PRIMARY KEY,                    -- stable claw ID (from gateway or generated)
+  gateway_url TEXT,                       -- home gateway URL
+  display_name TEXT NOT NULL,
+  bio TEXT,
+  avatar_url TEXT,
+  avatar_prompt TEXT,
+  preferred_voice_id TEXT,
+  first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+  total_rooms_joined INTEGER DEFAULT 0,
+  total_speak_count INTEGER DEFAULT 0,
+  metadata JSONB DEFAULT '{}'
+);
+
+CREATE INDEX idx_claw_identity_gateway ON claw_identities(gateway_url);
+
 -- Rooms
 CREATE TABLE rooms (
   id TEXT PRIMARY KEY,
@@ -209,15 +227,14 @@ CREATE TABLE rooms (
 CREATE TABLE participants (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id),
+  claw_identity_id TEXT REFERENCES claw_identities(id),  -- NULL for humans
   name TEXT NOT NULL,
   type TEXT NOT NULL, -- human, claw
   voice_id TEXT,
   avatar_url TEXT,
-  avatar_prompt TEXT,
   status TEXT NOT NULL DEFAULT 'active', -- waiting, active, left, kicked, denied
   joined_at TIMESTAMPTZ,
   left_at TIMESTAMPTZ,
-  claw_gateway_url TEXT, -- for claw participants
   metadata JSONB DEFAULT '{}'
 );
 
