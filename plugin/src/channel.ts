@@ -37,8 +37,17 @@ export function setRuntime(r: typeof runtime): void {
 // ============ Config Accessors ============
 
 function getPodclawstConfig(cfg: unknown): PodclawstConfig | null {
-  const config = cfg as { channels?: { podclawst?: PodclawstConfig } };
-  return config?.channels?.podclawst ?? null;
+  // Config is under plugins.entries.podclawst.config, not channels.podclawst
+  const config = cfg as { 
+    plugins?: { 
+      entries?: { 
+        podclawst?: { 
+          config?: PodclawstConfig 
+        } 
+      } 
+    } 
+  };
+  return config?.plugins?.entries?.podclawst?.config ?? null;
 }
 
 function listAccountIds(cfg: unknown): string[] {
